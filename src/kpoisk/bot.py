@@ -105,7 +105,7 @@ async def get_selected_movie(
         "year": movie.year,
         "rating": movie.rating if movie.rating is not None else "Нет оценки",
         "genre": movie.genre,
-        "url": movie.url,
+        "url": f"https://www.film.ru{movie.url}",
     }
 
 
