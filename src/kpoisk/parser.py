@@ -1,24 +1,43 @@
-import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
 import requests
 from adaptix import Retort
+from adaptix.conversion import get_converter
 from bs4 import BeautifulSoup
+from sqlalchemy import VARCHAR, Engine, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger()
 retort = Retort()
 
 
+class Base(DeclarativeBase): ...
+
+
 @dataclass(frozen=True)
-class Movie:
+class MovieDTO:
+    id: int
     title: str
     year: int
     rating: float | None
     genre: str
     url: str
+
+
+class MovieModel(Base):
+    __tablename__ = "movies"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(VARCHAR(50))
+    year: Mapped[int] = mapped_column()
+    rating: Mapped[float | None] = mapped_column()
+    genre: Mapped[str] = mapped_column(VARCHAR(50))
+    url: Mapped[str] = mapped_column()
+
+
+movie_model_to_dto = get_converter(MovieModel, MovieDTO)
+movie_dto_to_model = get_converter(MovieDTO, MovieModel)
 
 
 class FilmruMovieParser:
@@ -29,10 +48,10 @@ class FilmruMovieParser:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
 
-    def get_top(self) -> list[Movie]:
+    def get_top(self) -> list[MovieDTO]:
         return self._parse_top_page()
 
-    def _parse_top_page(self, page: int = 0) -> list[Movie]:
+    def _parse_top_page(self, page: int = 0) -> list[MovieDTO]:
         resp = requests.get(f"{self._base_url}/page/{page}/nojs", headers=self._headers)
 
         if resp.status_code == 404:
@@ -47,7 +66,7 @@ class FilmruMovieParser:
         if not containers:
             return []
 
-        movies: list[Movie] = []
+        movies: list[MovieDTO] = []
         logger.info("parser_current_page = %d", page)
         for movie_container in containers:
             title_raw = movie_container.find(
@@ -83,7 +102,8 @@ class FilmruMovieParser:
                 .text.strip()
             )
             movies.append(
-                Movie(
+                MovieDTO(
+                    id=None,
                     title=title,
                     year=year,
                     rating=float(rating_raw)
@@ -96,33 +116,24 @@ class FilmruMovieParser:
         return movies + self._parse_top_page(page=page + 1)
 
 
-class MoviesTopRepository:
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
+class MoviesRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
 
-    def _read(self, key: str | None) -> dict[str, Any] | None:
-        try:
-            with self._db_path.open("r", encoding="utf-8") as fd:
-                content = json.load(fd)
-        except (FileNotFoundError, json.JSONDecodeError):
-            content = {}
+    def save(self, movies: list[MovieDTO]) -> None:
+        models = [movie_dto_to_model(movie) for movie in movies]
+        self._session.add_all(models)
+        self._session.commit()
 
-        if key is not None:
-            return content.get(key)
-        return content
+    def get_all(self) -> list[MovieDTO]:
+        q = self._session.execute(
+            select(MovieModel).order_by(MovieModel.id)
+        )
+        return [movie_model_to_dto(movie) for movie in q.scalars().all()]
 
-    def _write(self, key: str, value: Any, tp: Any) -> None:
-        content = self._read(None)
-        value_dumped = retort.dump(value, tp)
-        with self._db_path.open("w", encoding="utf-8") as fd:
-            content[key] = value_dumped
-            json.dump(content, fd, ensure_ascii=False, indent=4)
+    def get_by_id(self, movie_id: int) -> MovieDTO:
+        return movie_model_to_dto(self._session.get(MovieModel, movie_id))
 
-    def save(self, movies: list[Movie]) -> None:
-        self._write("movies_top", movies, list[Movie])
 
-    def get_all(self) -> list[Movie]:
-        data = self._read("movies_top")
-        if data is None:
-            return []
-        return retort.load(data, list[Movie])
+def create_sessionmaker(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(engine)

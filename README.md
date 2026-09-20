@@ -6,5 +6,6 @@
 
 ```
 pip install uv
+docker compose up -d
 uv run src/kpoisk/bot.py
 ```
